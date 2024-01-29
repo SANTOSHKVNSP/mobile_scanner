@@ -1,4 +1,4 @@
-# mobile_scanner_example
+# yogathon_registration
 
 Demonstrates how to use the mobile_scanner plugin.
 

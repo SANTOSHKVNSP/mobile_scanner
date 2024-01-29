@@ -1,4 +1,4 @@
-package dev.steenbakker.mobile_scanner_example
+package dev.steenbakker.yogathon_registration
 
 import io.flutter.embedding.android.FlutterFragmentActivity
 

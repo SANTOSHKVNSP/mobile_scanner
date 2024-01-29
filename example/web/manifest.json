@@ -1,6 +1,6 @@
 {
     "name": "Mobile Scanner Example",
-    "short_name": "mobile_scanner_example",
+    "short_name": "yogathon_registration",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

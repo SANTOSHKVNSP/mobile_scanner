@@ -1,4 +1,4 @@
-name: mobile_scanner_example
+name: yogathon_registration
 description: Demonstrates how to use the mobile_scanner plugin.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
@@ -9,6 +9,9 @@ dependencies:
   flutter:
     sdk: flutter
   image_picker: ^0.8.6
+  http: ^0.13.5
+  gsheets: ^0.4.2
+  fluttertoast: ^8.1.1
 
   mobile_scanner:
     path: ../
