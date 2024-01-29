@@ -7,7 +7,7 @@ import 'package:yogathon_registration/barcode_scanner_without_controller.dart';
 void main() => runApp(const MaterialApp(home: MyHome()));
 
 class MyHome extends StatelessWidget {
-  const MyHome({Key? key}) : super(key: key);
+  const MyHome({super.key});
 
   @override
   Widget build(BuildContext context) {

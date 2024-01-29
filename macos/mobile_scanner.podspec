@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'mobile_scanner'
-  s.version          = '0.0.1'
+  s.version          = '3.5.6'
   s.summary          = 'An universal scanner for Flutter based on MLKit.'
   s.description      = <<-DESC
 An universal scanner for Flutter based on MLKit.
@@ -15,7 +15,7 @@ An universal scanner for Flutter based on MLKit.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
   s.dependency 'FlutterMacOS'
-  s.platform = :osx, '10.13'
+  s.platform = :osx, '10.14'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.swift_version = '5.0'
 end

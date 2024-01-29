@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:mobile_scanner_example/scanner_error_widget.dart';
 
 class BarcodeScannerWithoutController extends StatefulWidget {
-  const BarcodeScannerWithoutController({Key? key}) : super(key: key);
+  const BarcodeScannerWithoutController({super.key});
 
   @override
-  _BarcodeScannerWithoutControllerState createState() =>
+  State<BarcodeScannerWithoutController> createState() =>
       _BarcodeScannerWithoutControllerState();
 }
 
@@ -17,6 +18,7 @@ class _BarcodeScannerWithoutControllerState
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(title: const Text('Without controller')),
       backgroundColor: Colors.black,
       body: Builder(
         builder: (context) {
@@ -24,6 +26,9 @@ class _BarcodeScannerWithoutControllerState
             children: [
               MobileScanner(
                 fit: BoxFit.contain,
+                errorBuilder: (context, error, child) {
+                  return ScannerErrorWidget(error: error);
+                },
                 onDetect: (capture) {
                   setState(() {
                     this.capture = capture;
@@ -50,7 +55,7 @@ class _BarcodeScannerWithoutControllerState
                               overflow: TextOverflow.fade,
                               style: Theme.of(context)
                                   .textTheme
-                                  .headline4!
+                                  .headlineMedium!
                                   .copyWith(color: Colors.white),
                             ),
                           ),

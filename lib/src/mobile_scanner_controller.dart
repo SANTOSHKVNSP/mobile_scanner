@@ -1,12 +1,20 @@
 import 'dart:async';
 import 'dart:io';
+// ignore: unnecessary_import
+import 'dart:typed_data';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:mobile_scanner/src/barcode_utility.dart';
+import 'package:mobile_scanner/src/enums/barcode_format.dart';
+import 'package:mobile_scanner/src/enums/camera_facing.dart';
+import 'package:mobile_scanner/src/enums/detection_speed.dart';
+import 'package:mobile_scanner/src/enums/mobile_scanner_error_code.dart';
+import 'package:mobile_scanner/src/enums/mobile_scanner_state.dart';
+import 'package:mobile_scanner/src/enums/torch_state.dart';
 import 'package:mobile_scanner/src/mobile_scanner_exception.dart';
+import 'package:mobile_scanner/src/objects/barcode.dart';
+import 'package:mobile_scanner/src/objects/barcode_capture.dart';
+import 'package:mobile_scanner/src/objects/mobile_scanner_arguments.dart';
 
 /// The [MobileScannerController] holds all the logic of this plugin,
 /// where as the [MobileScanner] class is the frontend of this plugin.
@@ -18,21 +26,14 @@ class MobileScannerController {
     this.torchEnabled = false,
     this.formats,
     this.returnImage = false,
+    @Deprecated(
+      'Instead, use the result of calling `start()` to determine if permissions were granted.',
+    )
     this.onPermissionSet,
-  }) {
-    // In case a new instance is created before calling dispose()
-    if (controllerHashcode != null) {
-      stop();
-    }
-    controllerHashcode = hashCode;
-    events = _eventChannel
-        .receiveBroadcastStream()
-        .listen((data) => _handleEvent(data as Map));
-  }
-
-  /// The hashcode of the controller to check if the correct object is mounted.
-  /// Must be static to keep the same value on new instances
-  static int? controllerHashcode;
+    this.autoStart = true,
+    this.cameraResolution,
+    this.useNewCameraSelector = false,
+  });
 
   /// Select which camera should be used.
   ///
@@ -57,16 +58,42 @@ class MobileScannerController {
   /// WARNING: DetectionSpeed.unrestricted can cause memory issues on some devices
   final DetectionSpeed detectionSpeed;
 
-  /// Sets the timeout of scanner.
-  /// The timeout is set in miliseconds.
+  /// Sets the timeout, in milliseconds, of the scanner.
   ///
-  /// NOTE: The timeout only works if the [detectionSpeed] is set to
-  /// [DetectionSpeed.normal] (which is the default value).
+  /// This timeout is ignored if the [detectionSpeed]
+  /// is not set to [DetectionSpeed.normal].
+  ///
+  /// By default this is set to `250` milliseconds,
+  /// which prevents memory issues on older devices.
   final int detectionTimeoutMs;
+
+  /// Automatically start the mobileScanner on initialization.
+  final bool autoStart;
+
+  /// The desired resolution for the camera.
+  ///
+  /// When this value is provided, the camera will try to match this resolution,
+  /// or fallback to the closest available resolution.
+  /// When this is null, Android defaults to a resolution of 640x480.
+  ///
+  /// Bear in mind that changing the resolution has an effect on the aspect ratio.
+  ///
+  /// When the camera orientation changes,
+  /// the resolution will be flipped to match the new dimensions of the display.
+  ///
+  /// Currently only supported on Android.
+  final Size? cameraResolution;
+
+  /// Use the new resolution selector. Warning: not fully tested, may produce
+  /// unwanted/zoomed images.
+  ///
+  /// Only supported on Android
+  final bool useNewCameraSelector;
 
   /// Sets the barcode stream
   final StreamController<BarcodeCapture> _barcodesController =
       StreamController.broadcast();
+
   Stream<BarcodeCapture> get barcodes => _barcodesController.stream;
 
   static const MethodChannel _methodChannel =
@@ -74,10 +101,13 @@ class MobileScannerController {
   static const EventChannel _eventChannel =
       EventChannel('dev.steenbakker.mobile_scanner/scanner/event');
 
+  @Deprecated(
+    'Instead, use the result of calling `start()` to determine if permissions were granted.',
+  )
   Function(bool permissionGranted)? onPermissionSet;
 
   /// Listen to events from the platform specific code
-  late StreamSubscription events;
+  StreamSubscription? events;
 
   /// A notifier that provides several arguments about the MobileScanner
   final ValueNotifier<MobileScannerArguments?> startArguments =
@@ -90,33 +120,73 @@ class MobileScannerController {
   late final ValueNotifier<CameraFacing> cameraFacingState =
       ValueNotifier(facing);
 
+  /// A notifier that provides zoomScale.
+  final ValueNotifier<double> zoomScaleState = ValueNotifier(0.0);
+
   bool isStarting = false;
 
-  bool? _hasTorch;
+  /// A notifier that provides availability of the Torch (Flash)
+  final ValueNotifier<bool?> hasTorchState = ValueNotifier(false);
+
+  /// Returns whether the device has a torch.
+  ///
+  /// Throws an error if the controller is not initialized.
+  bool get hasTorch {
+    final hasTorch = hasTorchState.value;
+    if (hasTorch == null) {
+      throw const MobileScannerException(
+        errorCode: MobileScannerErrorCode.controllerUninitialized,
+      );
+    }
+
+    return hasTorch;
+  }
 
   /// Set the starting arguments for the camera
   Map<String, dynamic> _argumentsToMap({CameraFacing? cameraFacingOverride}) {
     final Map<String, dynamic> arguments = {};
 
     cameraFacingState.value = cameraFacingOverride ?? facing;
-    arguments['facing'] = cameraFacingState.value.index;
+    arguments['facing'] = cameraFacingState.value.rawValue;
     arguments['torch'] = torchEnabled;
-    arguments['speed'] = detectionSpeed.index;
+    arguments['speed'] = detectionSpeed.rawValue;
     arguments['timeout'] = detectionTimeoutMs;
+    arguments['returnImage'] = returnImage;
+    arguments['useNewCameraSelector'] = useNewCameraSelector;
+
+    /*    if (scanWindow != null) {
+      arguments['scanWindow'] = [
+        scanWindow!.left,
+        scanWindow!.top,
+        scanWindow!.right,
+        scanWindow!.bottom,
+      ];
+    } */
 
     if (formats != null) {
-      if (Platform.isAndroid) {
-        arguments['formats'] = formats!.map((e) => e.index).toList();
-      } else if (Platform.isIOS || Platform.isMacOS) {
+      if (kIsWeb || Platform.isIOS || Platform.isMacOS || Platform.isAndroid) {
         arguments['formats'] = formats!.map((e) => e.rawValue).toList();
       }
     }
-    arguments['returnImage'] = true;
+
+    if (cameraResolution != null) {
+      arguments['cameraResolution'] = <int>[
+        cameraResolution!.width.toInt(),
+        cameraResolution!.height.toInt(),
+      ];
+    }
+
     return arguments;
   }
 
-  /// Start barcode scanning. This will first check if the required permissions
-  /// are set.
+  /// Start scanning for barcodes.
+  /// Upon calling this method, the necessary camera permission will be requested.
+  ///
+  /// Returns an instance of [MobileScannerArguments]
+  /// when the scanner was successfully started.
+  /// Returns null if the scanner is currently starting.
+  ///
+  /// Throws a [MobileScannerException] if starting the scanner failed.
   Future<MobileScannerArguments?> start({
     CameraFacing? cameraFacingOverride,
   }) async {
@@ -124,28 +194,62 @@ class MobileScannerController {
       debugPrint("Called start() while starting.");
       return null;
     }
+
+    events ??= _eventChannel
+        .receiveBroadcastStream()
+        .listen((data) => _handleEvent(data as Map));
+
     isStarting = true;
 
     // Check authorization status
     if (!kIsWeb) {
-      final MobileScannerState state = MobileScannerState
-          .values[await _methodChannel.invokeMethod('state') as int? ?? 0];
+      final MobileScannerState state;
+
+      try {
+        state = MobileScannerState.fromRawValue(
+          await _methodChannel.invokeMethod('state') as int? ?? 0,
+        );
+      } on PlatformException catch (error) {
+        isStarting = false;
+
+        throw MobileScannerException(
+          errorCode: MobileScannerErrorCode.genericError,
+          errorDetails: MobileScannerErrorDetails(
+            code: error.code,
+            details: error.details as Object?,
+            message: error.message,
+          ),
+        );
+      }
+
       switch (state) {
+        // Android does not have an undetermined permission state.
+        // So if the permission state is denied, just request it now.
         case MobileScannerState.undetermined:
-          final bool result =
-              await _methodChannel.invokeMethod('request') as bool? ?? false;
-          if (!result) {
-            isStarting = false;
-            onPermissionSet?.call(result);
-            throw MobileScannerException('User declined camera permission.');
-          }
-          break;
         case MobileScannerState.denied:
-          isStarting = false;
-          onPermissionSet?.call(false);
-          throw MobileScannerException('User declined camera permission.');
+          try {
+            final bool granted =
+                await _methodChannel.invokeMethod('request') as bool? ?? false;
+
+            if (!granted) {
+              isStarting = false;
+              throw const MobileScannerException(
+                errorCode: MobileScannerErrorCode.permissionDenied,
+              );
+            }
+          } on PlatformException catch (error) {
+            isStarting = false;
+            throw MobileScannerException(
+              errorCode: MobileScannerErrorCode.genericError,
+              errorDetails: MobileScannerErrorDetails(
+                code: error.code,
+                details: error.details as Object?,
+                message: error.message,
+              ),
+            );
+          }
+
         case MobileScannerState.authorized:
-          onPermissionSet?.call(true);
           break;
       }
     }
@@ -158,42 +262,67 @@ class MobileScannerController {
         _argumentsToMap(cameraFacingOverride: cameraFacingOverride),
       );
     } on PlatformException catch (error) {
-      debugPrint('${error.code}: ${error.message}');
-      if (error.code == "MobileScannerWeb") {
-        onPermissionSet?.call(false);
+      MobileScannerErrorCode errorCode = MobileScannerErrorCode.genericError;
+
+      final String? errorMessage = error.message;
+
+      if (kIsWeb) {
+        if (errorMessage == null) {
+          errorCode = MobileScannerErrorCode.genericError;
+        } else if (errorMessage.contains('NotFoundError') ||
+            errorMessage.contains('NotSupportedError')) {
+          errorCode = MobileScannerErrorCode.unsupported;
+        } else if (errorMessage.contains('NotAllowedError')) {
+          errorCode = MobileScannerErrorCode.permissionDenied;
+        } else {
+          errorCode = MobileScannerErrorCode.genericError;
+        }
       }
+
       isStarting = false;
-      return null;
+
+      throw MobileScannerException(
+        errorCode: errorCode,
+        errorDetails: MobileScannerErrorDetails(
+          code: error.code,
+          details: error.details as Object?,
+          message: error.message,
+        ),
+      );
     }
 
     if (startResult == null) {
       isStarting = false;
-      throw MobileScannerException(
-        'Failed to start mobileScanner, no response from platform side',
+      throw const MobileScannerException(
+        errorCode: MobileScannerErrorCode.genericError,
       );
     }
 
-    _hasTorch = startResult['torchable'] as bool? ?? false;
-    if (_hasTorch! && torchEnabled) {
-      torchState.value = TorchState.on;
-    }
+    final hasTorch = startResult['torchable'] as bool? ?? false;
+    hasTorchState.value = hasTorch;
+
+    final Size size;
 
     if (kIsWeb) {
-      // If we reach this line, it means camera permission has been granted
-      onPermissionSet?.call(
-        true,
+      size = Size(
+        startResult['videoWidth'] as double? ?? 0,
+        startResult['videoHeight'] as double? ?? 0,
+      );
+    } else {
+      final Map<Object?, Object?>? sizeInfo =
+          startResult['size'] as Map<Object?, Object?>?;
+
+      size = Size(
+        sizeInfo?['width'] as double? ?? 0,
+        sizeInfo?['height'] as double? ?? 0,
       );
     }
 
     isStarting = false;
     return startArguments.value = MobileScannerArguments(
-      size: kIsWeb
-          ? Size(
-              startResult['videoWidth'] as double? ?? 0,
-              startResult['videoHeight'] as double? ?? 0,
-            )
-          : toSize(startResult['size'] as Map? ?? {}),
-      hasTorch: _hasTorch!,
+      numberOfCameras: startResult['numberOfCameras'] as int?,
+      size: size,
+      hasTorch: hasTorch,
       textureId: kIsWeb ? null : startResult['textureId'] as int?,
       webId: kIsWeb ? startResult['ViewID'] as String? : null,
     );
@@ -201,34 +330,40 @@ class MobileScannerController {
 
   /// Stops the camera, but does not dispose this controller.
   Future<void> stop() async {
-    try {
-      await _methodChannel.invokeMethod('stop');
-    } catch (e) {
-      debugPrint('$e');
-    }
+    await _methodChannel.invokeMethod('stop');
+
+    // After the camera stopped, set the torch state to off,
+    // as the torch state callback is never called when the camera is stopped.
+    torchState.value = TorchState.off;
   }
 
   /// Switches the torch on or off.
   ///
-  /// Only works if torch is available.
+  /// Does nothing if the device has no torch.
+  ///
+  /// Throws if the controller was not initialized.
   Future<void> toggleTorch() async {
-    if (_hasTorch == null) {
-      throw MobileScannerException(
-        'Cannot toggle torch if start() has never been called',
+    final hasTorch = hasTorchState.value;
+
+    if (hasTorch == null) {
+      throw const MobileScannerException(
+        errorCode: MobileScannerErrorCode.controllerUninitialized,
       );
-    } else if (!_hasTorch!) {
-      throw MobileScannerException('Device has no torch');
     }
 
-    torchState.value =
+    if (!hasTorch) {
+      return;
+    }
+
+    final TorchState newState =
         torchState.value == TorchState.off ? TorchState.on : TorchState.off;
 
-    await _methodChannel.invokeMethod('torch', torchState.value.index);
+    await _methodChannel.invokeMethod('torch', newState.rawValue);
   }
 
-  /// Switches the torch on or off.
+  /// Changes the state of the camera (front or back).
   ///
-  /// Only works if torch is available.
+  /// Does nothing if the device has no front camera.
   Future<void> switchCamera() async {
     await _methodChannel.invokeMethod('stop');
     final CameraFacing facingToUse =
@@ -244,9 +379,34 @@ class MobileScannerController {
   ///
   /// [path] The path of the image on the devices
   Future<bool> analyzeImage(String path) async {
+    events ??= _eventChannel
+        .receiveBroadcastStream()
+        .listen((data) => _handleEvent(data as Map));
+
     return _methodChannel
         .invokeMethod<bool>('analyzeImage', path)
         .then<bool>((bool? value) => value ?? false);
+  }
+
+  /// Set the zoomScale of the camera.
+  ///
+  /// [zoomScale] must be within 0.0 and 1.0, where 1.0 is the max zoom, and 0.0
+  /// is zoomed out.
+  Future<void> setZoomScale(double zoomScale) async {
+    if (zoomScale < 0 || zoomScale > 1) {
+      throw const MobileScannerException(
+        errorCode: MobileScannerErrorCode.genericError,
+        errorDetails: MobileScannerErrorDetails(
+          message: 'The zoomScale must be between 0 and 1.',
+        ),
+      );
+    }
+    await _methodChannel.invokeMethod('setScale', zoomScale);
+  }
+
+  /// Reset the zoomScale of the camera to use standard scale 1x.
+  Future<void> resetZoomScale() async {
+    await _methodChannel.invokeMethod('resetScale');
   }
 
   /// Disposes the MobileScannerController and closes all listeners.
@@ -254,12 +414,8 @@ class MobileScannerController {
   /// If you call this, you cannot use this controller object anymore.
   void dispose() {
     stop();
-    events.cancel();
+    events?.cancel();
     _barcodesController.close();
-    if (hashCode == controllerHashcode) {
-      controllerHashcode = null;
-      onPermissionSet = null;
-    }
   }
 
   /// Handles a returning event from the platform side
@@ -271,7 +427,8 @@ class MobileScannerController {
       case 'torchState':
         final state = TorchState.values[data as int? ?? 0];
         torchState.value = state;
-        break;
+      case 'zoomScaleState':
+        zoomScaleState.value = data as double? ?? 0.0;
       case 'barcode':
         if (data == null) return;
         final parsed = (data as List)
@@ -279,37 +436,70 @@ class MobileScannerController {
             .toList();
         _barcodesController.add(
           BarcodeCapture(
+            raw: data,
             barcodes: parsed,
             image: event['image'] as Uint8List?,
+            width: event['width'] as double?,
+            height: event['height'] as double?,
           ),
         );
-        break;
       case 'barcodeMac':
         _barcodesController.add(
           BarcodeCapture(
+            raw: data,
             barcodes: [
               Barcode(
                 rawValue: (data as Map)['payload'] as String?,
-              )
+                format: BarcodeFormat.fromRawValue(
+                  data['symbology'] as int? ?? -1,
+                ),
+              ),
             ],
           ),
         );
-        break;
       case 'barcodeWeb':
+        final barcode = data as Map?;
+        final corners = barcode?['corners'] as List<Object?>? ?? <Object?>[];
+
         _barcodesController.add(
           BarcodeCapture(
+            raw: data,
             barcodes: [
-              Barcode(
-                rawValue: data as String?,
-              )
+              if (barcode != null)
+                Barcode(
+                  rawValue: barcode['rawValue'] as String?,
+                  rawBytes: barcode['rawBytes'] as Uint8List?,
+                  format: BarcodeFormat.fromRawValue(
+                    barcode['format'] as int? ?? -1,
+                  ),
+                  corners: List.unmodifiable(
+                    corners.cast<Map<Object?, Object?>>().map(
+                      (Map<Object?, Object?> e) {
+                        return Offset(e['x']! as double, e['y']! as double);
+                      },
+                    ),
+                  ),
+                ),
             ],
           ),
         );
-        break;
       case 'error':
-        throw MobileScannerException(data as String);
+        throw MobileScannerException(
+          errorCode: MobileScannerErrorCode.genericError,
+          errorDetails: MobileScannerErrorDetails(message: data as String?),
+        );
       default:
         throw UnimplementedError(name as String?);
     }
+  }
+
+  /// updates the native ScanWindow
+  Future<void> updateScanWindow(Rect? window) async {
+    List? data;
+    if (window != null) {
+      data = [window.left, window.top, window.right, window.bottom];
+    }
+
+    await _methodChannel.invokeMethod('updateScanWindow', {'rect': data});
   }
 }
